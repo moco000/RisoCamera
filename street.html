@@ -49,6 +49,11 @@ h1::after{content:attr(data-t);position:absolute;left:3px;top:2px;color:var(--pi
 .btn.primary{background:var(--blue);color:#fff;}
 .btn.pink{background:var(--pink);color:var(--on-pink);box-shadow:3px 3px 0 var(--blue);}
 .btn:active{transform:translate(3px,3px);box-shadow:0 0 0 var(--pink);}
+.src{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 8px;}
+.tokenbox{margin:0 0 8px;}
+.tokenbox input{width:100%;min-height:44px;padding:6px 12px;border:2px solid var(--over);border-radius:3px;background:#FBFAF7;font-weight:700;}
+.small{margin:4px 2px 0;font-size:12px;}
+.search .btn{padding:8px 12px;white-space:nowrap;}
 .chips{display:flex;gap:6px;overflow-x:auto;padding:2px 2px 8px;}
 .tg{
   flex:0 0 auto;display:inline-flex;align-items:center;min-height:38px;padding:4px 13px;border:2px solid var(--over);border-radius:99px;
@@ -103,7 +108,7 @@ input[type=range]::-moz-range-thumb{width:32px;height:32px;border:0;border-radiu
 
 @media (min-width:880px){
   .app{max-width:1060px;display:grid;grid-template-columns:minmax(0,640px) minmax(0,1fr);column-gap:44px;align-items:start;}
-  header,.search,.chips,.msgwrap{grid-column:1/-1;}
+  header,.src,.tokenbox,.search,.chips,.msgwrap{grid-column:1/-1;}
   .sheet canvas{aspect-ratio:4/3;}
 }
 </style>
@@ -116,8 +121,17 @@ input[type=range]::-moz-range-thumb{width:32px;height:32px;border:0;border-radiu
   </header>
   <p class="nogl" id="nogl" hidden>このブラウザはWebGLに対応していないため動きません。別のブラウザでお試しください。</p>
 
+  <div class="src" role="group" aria-label="写真の出どころ">
+    <button class="tg" type="button" id="srcC" aria-pressed="true">Wikimedia（キー不要）</button>
+    <button class="tg" type="button" id="srcM" aria-pressed="false">Mapillary（街角・要トークン）</button>
+  </div>
+  <div class="tokenbox" id="tokenBox" hidden>
+    <input id="token" type="password" placeholder="Mapillaryのアクセストークン（MLY|…）" aria-label="Mapillaryのアクセストークン" autocomplete="off">
+    <p class="small"><a href="https://www.mapillary.com/developer" target="_blank" rel="noopener noreferrer">Mapillaryの開発者ページ</a>で無料のクライアントトークンを作って貼り付けてください。このブラウザの中にだけ保存されます。</p>
+  </div>
   <form class="search" id="form" role="search">
-    <input id="q" type="search" placeholder="場所を入力（例：東京、Paris）" aria-label="場所を入力" autocomplete="off" enterkeyhint="search">
+    <input id="q" type="search" placeholder="場所の名前、または緯度,経度（例 35.6586, 139.7454）" aria-label="場所の名前、または緯度と経度" autocomplete="off" enterkeyhint="search">
+    <button class="btn" id="locBtn" type="button" aria-label="現在地を使う" title="現在地">現在地</button>
     <button class="btn primary" type="submit">さがす</button>
   </form>
   <div class="chips" id="places" aria-label="場所の候補"></div>
@@ -135,6 +149,7 @@ input[type=range]::-moz-range-thumb{width:32px;height:32px;border:0;border-radiu
     <div class="tools">
       <button class="btn pink" id="saveBtn" type="button">この景色を保存</button>
       <button class="tg" id="gyro" type="button" aria-pressed="false" hidden>ジャイロで見回す</button>
+      <button class="tg" id="hereBtn" type="button" hidden>この地点の周辺を探す</button>
     </div>
   </div>
 
@@ -156,7 +171,7 @@ input[type=range]::-moz-range-thumb{width:32px;height:32px;border:0;border-radiu
         <button class="tg" id="frame" type="button" aria-pressed="true">フチをつけて保存</button>
       </div>
     </div>
-    <p class="note">写真は Wikimedia Commons の公開素材です。作者名とライセンスは写真の下に表示され、保存した画像にも入ります。</p>
+    <p class="note">写真は Wikimedia Commons と Mapillary の公開素材です。作者名とライセンスは写真の下に表示され、保存した画像にも入ります。緯度経度は、Googleマップで場所を長押しすると出る数字をそのまま貼れます。</p>
   </div>
 </div>
 <div class="toast" id="toast" hidden role="status" aria-live="polite"></div>
@@ -405,21 +420,49 @@ void main(){
   $('#auto').addEventListener('click', e => { auto = !auto; e.currentTarget.setAttribute('aria-pressed', String(auto)); });
   $('#frame').addEventListener('click', e => { P.frame = !P.frame; e.currentTarget.setAttribute('aria-pressed', String(P.frame)); });
 
-  /* ================= Wikimedia Commons 検索 ================= */
+  /* ================= 検索（Wikimedia Commons / Mapillary） ================= */
   const API = 'https://commons.wikimedia.org/w/api.php';
   const CAT = 'deepcategory:"360° panoramas with equirectangular projection"';
   const PLACES = [
-    ['東京','Tokyo'], ['京都','Kyoto'], ['大阪','Osaka'], ['パリ','Paris'], ['ニューヨーク','New York'],
-    ['ロンドン','London'], ['ローマ','Rome'], ['ベルリン','Berlin'], ['おまかせ','']
+    ['東京','Tokyo',35.6812,139.7671], ['京都','Kyoto',35.0116,135.7681], ['大阪','Osaka',34.6937,135.5023],
+    ['パリ','Paris',48.8584,2.2945], ['ニューヨーク','New York',40.758,-73.9855], ['ロンドン','London',51.5007,-.1246],
+    ['ローマ','Rome',41.8902,12.4922], ['ベルリン','Berlin',52.5163,13.3777], ['おまかせ','',null,null]
   ];
   const STEPS = [2560, 1920, 1280, 960];
   const plain = html => { const d = document.createElement('div'); d.innerHTML = html || ''; return (d.textContent || '').replace(/\s+/g, ' ').trim(); };
+  const rad = d => d * Math.PI / 180;
+  function distM(la1, lo1, la2, lo2){
+    const dLa = rad(la2 - la1), dLo = rad(lo2 - lo1);
+    const x = Math.sin(dLa/2)**2 + Math.cos(rad(la1)) * Math.cos(rad(la2)) * Math.sin(dLo/2)**2;
+    return 2 * 6371000 * Math.asin(Math.sqrt(x));
+  }
+  const fmtDist = m => m < 1000 ? `約${Math.max(10, Math.round(m / 10) * 10)}m` : `約${(m / 1000).toFixed(1)}km`;
+  function parseLatLon(str){
+    const m = str.match(/^\s*(-?\d{1,3}(?:\.\d+)?)\s*[,，\s]\s*(-?\d{1,3}(?:\.\d+)?)\s*$/);
+    if (!m) return null;
+    const lat = +m[1], lon = +m[2];
+    return (Math.abs(lat) <= 90 && Math.abs(lon) <= 180) ? {lat, lon} : null;
+  }
 
-  async function query(q, random){
+  let source = 'commons';
+  const tokenEl = $('#token'), tokenBox = $('#tokenBox');
+  try { tokenEl.value = localStorage.getItem('riso_mly') || ''; } catch (_) {}
+  tokenEl.addEventListener('change', () => { try { localStorage.setItem('riso_mly', tokenEl.value.trim()); } catch (_) {} });
+  function setSource(v){
+    source = v;
+    $('#srcC').setAttribute('aria-pressed', String(v === 'commons'));
+    $('#srcM').setAttribute('aria-pressed', String(v === 'mly'));
+    tokenBox.hidden = v !== 'mly';
+  }
+  $('#srcC').addEventListener('click', () => setSource('commons'));
+  $('#srcM').addEventListener('click', () => setSource('mly'));
+
+  /* --- Wikimedia Commons --- */
+  async function query(q, random, center){
     const params = new URLSearchParams({
       action:'query', format:'json', origin:'*', generator:'search', gsrnamespace:'6', gsrlimit:'50', gsrsearch:q,
-      prop:'imageinfo', iiprop:'url|size|mime|extmetadata', iiurlwidth:'500',
-      iiextmetadatafilter:'Artist|LicenseShortName|LicenseUrl'
+      prop:'imageinfo|coordinates', iiprop:'url|size|mime|extmetadata', iiurlwidth:'500',
+      iiextmetadatafilter:'Artist|LicenseShortName|LicenseUrl', colimit:'50', coprimary:'primary'
     });
     if (random) params.set('gsrsort', 'random');
     const r = await fetch(API + '?' + params.toString());
@@ -435,16 +478,20 @@ void main(){
       if (ii.width < 1900) continue;
       const w = STEPS.find(s => s <= ii.width) || 960;
       const em = ii.extmetadata || {};
-      out.push({
+      const co = p.coordinates && p.coordinates[0];
+      const it = {
         title: p.title.replace(/^File:/, '').replace(/\.[a-z0-9]+$/i, '').replace(/_/g, ' '),
         thumb: ii.thumburl,
         big: ii.thumburl.replace(/\/\d+px-/, `/${w}px-`),
         page: ii.descriptionurl,
         author: plain(em.Artist && em.Artist.value) || '作者不明',
         license: plain(em.LicenseShortName && em.LicenseShortName.value) || 'ライセンスはリンク先で確認',
-        licenseUrl: (em.LicenseUrl && em.LicenseUrl.value) || ''
-      });
+        lat: co ? co.lat : null, lon: co ? co.lon : null, dist: null
+      };
+      if (center && it.lat != null) it.dist = distM(center.lat, center.lon, it.lat, it.lon);
+      out.push(it);
     }
+    if (center) out.sort((a, b) => (a.dist == null) - (b.dist == null) || (a.dist || 0) - (b.dist || 0));
     return out;
   }
   async function findPanos(term, random){
@@ -452,19 +499,62 @@ void main(){
     if (!list.length && term) list = await query(`${term} 360° panorama equirectangular`, false);
     return list;
   }
+  async function findNearCommons(lat, lon){
+    const c = {lat, lon};
+    let list = await query(`${CAT} nearcoord:10km,${lat},${lon}`, false, c);
+    if (!list.length) list = await query(`nearcoord:10km,${lat},${lon} panorama`, false, c);
+    return list;
+  }
 
+  /* --- 場所名 → 緯度経度（OpenStreetMap Nominatim） --- */
+  async function geocode(q){
+    const r = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&accept-language=ja&q=' + encodeURIComponent(q));
+    if (!r.ok) throw new Error('geocode ' + r.status);
+    const j = await r.json();
+    return j[0] ? {lat:+j[0].lat, lon:+j[0].lon} : null;
+  }
+
+  /* --- Mapillary --- */
+  async function findMapillary(lat, lon, token){
+    for (const rM of [150, 500, 1500]) {
+      const dLat = rM / 111320, dLon = rM / (111320 * Math.max(.2, Math.cos(rad(lat))));
+      const params = new URLSearchParams({
+        access_token: token, fields:'id,geometry,is_pano,captured_at,thumb_256_url,thumb_2048_url',
+        bbox:`${lon - dLon},${lat - dLat},${lon + dLon},${lat + dLat}`, limit:'200', is_pano:'true'
+      });
+      const r = await fetch('https://graph.mapillary.com/images?' + params.toString());
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j.error) { const e = new Error('mly'); e.auth = r.status === 400 || r.status === 401 || r.status === 403; throw e; }
+      const items = (j.data || []).filter(d => d.is_pano !== false && d.thumb_2048_url && d.geometry && d.geometry.coordinates).map(d => {
+        const [lo, la] = d.geometry.coordinates;
+        const date = d.captured_at ? new Date(d.captured_at) : null;
+        const ds = date ? `${date.getFullYear()}.${pad(date.getMonth() + 1)}.${pad(date.getDate())}` : '';
+        return {
+          title: ds ? `Mapillary ${ds}` : 'Mapillary',
+          thumb: d.thumb_256_url || d.thumb_2048_url, big: d.thumb_2048_url,
+          page: `https://www.mapillary.com/app/?pKey=${d.id}&lat=${la}&lng=${lo}&z=18&focus=photo`,
+          author: 'Mapillary contributors', license: 'CC BY-SA 4.0',
+          lat: la, lon: lo, dist: distM(lat, lon, la, lo)
+        };
+      });
+      if (items.length) return items.sort((a, b) => a.dist - b.dist).slice(0, 40);
+    }
+    return [];
+  }
+
+  /* --- 一覧 --- */
   let results = [];
   const cards = $('#cards');
   function renderCards(){
     cards.textContent = '';
-    results.forEach((it, i) => {
+    results.forEach(it => {
       const b = document.createElement('button'); b.type = 'button'; b.className = 'card';
       b.setAttribute('aria-label', it.title + ' を見る');
       const t = document.createElement('div'); t.className = 'thumb';
       const im = document.createElement('img'); im.src = it.thumb; im.alt = ''; im.loading = 'lazy'; im.crossOrigin = 'anonymous';
       t.append(im);
-      const s = document.createElement('span'); s.textContent = it.title;
-      b.append(t, s); b.addEventListener('click', () => loadPano(it));
+      const sp = document.createElement('span'); sp.textContent = it.dist != null ? `${it.title}・${fmtDist(it.dist)}` : it.title;
+      b.append(t, sp); b.addEventListener('click', () => loadPano(it));
       cards.append(b);
     });
     markCurrent();
@@ -474,19 +564,49 @@ void main(){
   }
 
   let searchSeq = 0;
-  async function runSearch(term, label){
+  async function runSearch(o){
     const seq = ++searchSeq;
-    msg(`「${label || term || 'おまかせ'}」の360度写真を探しています…`);
+    const label = o.label || o.term || 'おまかせ';
+    let {lat, lon} = o;
     try {
-      const list = await findPanos(term, !term);
+      let list = [];
+      if (source === 'mly') {
+        const token = tokenEl.value.trim();
+        if (!token) { tokenBox.hidden = false; msg('Mapillaryを使うには、アクセストークンを入力してください。'); return; }
+        if (lat == null) {
+          if (o.random || (!o.term)) {
+            const pool = PLACES.filter(x => x[2] != null), r = pool[Math.floor(Math.random() * pool.length)];
+            lat = r[2]; lon = r[3];
+          } else {
+            msg(`「${label}」の場所を調べています…`);
+            const g = await geocode(o.term); if (seq !== searchSeq) return;
+            if (!g) { msg('場所が見つかりませんでした。別の名前か、緯度,経度で試してください。'); return; }
+            lat = g.lat; lon = g.lon;
+          }
+        }
+        msg('Mapillaryで周辺の360度写真を探しています…');
+        list = await findMapillary(lat, lon, token);
+      } else if (lat != null) {
+        msg('その場所の近くの360度写真を探しています…');
+        list = await findNearCommons(lat, lon);
+      } else {
+        msg(`「${label}」の360度写真を探しています…`);
+        list = await findPanos(o.term || '', !!o.random || !o.term);
+      }
       if (seq !== searchSeq) return;
-      if (!list.length) { results = []; renderCards(); msg('見つかりませんでした。別のキーワードか「おまかせ」をどうぞ。'); return; }
+      if (!list.length) {
+        results = []; renderCards();
+        msg(source === 'mly' ? 'この周辺に360度写真は見つかりませんでした。別の場所で試してください。'
+          : (lat != null ? 'この近くにはWikimediaの360度写真がありません。Mapillaryに切り替えると見つかることがあります。' : '見つかりませんでした。別のキーワードか「おまかせ」をどうぞ。'));
+        return;
+      }
       results = list; renderCards();
       msg(`${list.length}枚見つかりました。下の一覧から選べます。`);
       loadPano(list[0]);
     } catch (e) {
       console.error(e);
-      if (seq === searchSeq) msg('写真の検索に失敗しました。通信状況を確認して、もう一度試してください。');
+      if (seq !== searchSeq) return;
+      msg(e && e.auth ? 'Mapillaryのトークンが正しくないようです。確認してください。' : '検索に失敗しました。通信状況を確認して、もう一度試してください。');
     }
   }
 
@@ -520,23 +640,44 @@ void main(){
   function showCredit(it){
     const c = $('#credit'); c.textContent = '';
     const a = document.createElement('a'); a.href = it.page; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.textContent = it.title;
-    c.append(a, document.createTextNode(`　/ ${it.author} / ${it.license} / Wikimedia Commons`));
+    c.append(a, document.createTextNode(`　/ ${it.author} / ${it.license} / ${it.author === 'Mapillary contributors' ? 'Mapillary' : 'Wikimedia Commons'}`));
+    $('#hereBtn').hidden = it.lat == null;
   }
 
   /* ================= 検索フォーム ================= */
   const chipsEl = $('#places');
-  PLACES.forEach(([label, term]) => {
-    const b = document.createElement('button'); b.type = 'button'; b.className = 'tg'; b.textContent = label;
-    b.addEventListener('click', () => { $('#q').value = term ? label : ''; runSearch(term, label); });
+  PLACES.forEach(p => {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'tg'; b.textContent = p[0];
+    b.addEventListener('click', () => {
+      $('#q').value = p[1] ? p[0] : '';
+      const useC = source === 'mly' && p[2] != null;
+      runSearch({term:p[1], label:p[0], random:!p[1], lat:useC ? p[2] : null, lon:useC ? p[3] : null});
+    });
     chipsEl.append(b);
   });
   $('#form').addEventListener('submit', e => {
     e.preventDefault();
-    const raw = $('#q').value.trim();
-    const hit = PLACES.find(p => p[0] === raw);
-    const term = hit ? hit[1] : raw;
-    runSearch(term, raw);
+    const raw = $('#q').value.trim(); if (!raw) return;
+    const ll = parseLatLon(raw);
+    if (ll) runSearch({lat:ll.lat, lon:ll.lon, label:raw});
+    else {
+      const hit = PLACES.find(p => p[0] === raw);
+      if (hit) runSearch({term:hit[1], label:raw, lat:source === 'mly' ? hit[2] : null, lon:source === 'mly' ? hit[3] : null});
+      else runSearch({term:raw, label:raw});
+    }
     $('#q').blur();
+  });
+  $('#locBtn').addEventListener('click', () => {
+    if (!navigator.geolocation) { toast('このブラウザでは現在地を使えません。'); return; }
+    msg('現在地を調べています…');
+    navigator.geolocation.getCurrentPosition(pos => {
+      const lat = pos.coords.latitude, lon = pos.coords.longitude;
+      $('#q').value = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+      runSearch({lat, lon, label:'現在地'});
+    }, () => { msg(''); toast('現在地を取得できませんでした。許可を確認してください。'); }, {enableHighAccuracy:false, timeout:10000});
+  });
+  $('#hereBtn').addEventListener('click', () => {
+    if (current && current.lat != null) { $('#q').value = `${current.lat.toFixed(5)}, ${current.lon.toFixed(5)}`; runSearch({lat:current.lat, lon:current.lon, label:'この地点'}); }
   });
 
   /* ================= 保存 ================= */
@@ -568,7 +709,7 @@ void main(){
       x.fillText(ellipsize(x, current.title, maxW), m, m + h + mb * .3);
       x.font = `500 ${Math.round(fs * .82)}px "Zen Kaku Gothic New","Hiragino Sans",sans-serif`;
       x.fillText(ellipsize(x, `${current.author} / ${current.license}`, maxW), m, m + h + mb * .55);
-      x.fillText('Wikimedia Commons', m, m + h + mb * .78);
+      x.fillText(current.author === 'Mapillary contributors' ? 'Mapillary' : 'Wikimedia Commons', m, m + h + mb * .78);
       const sr = mb * .16, sy = m + h + mb * .55, sx = c.width - m - sr * 2.2;
       x.fillStyle = '#FF48B0'; x.beginPath(); x.arc(sx, sy, sr, 0, 7); x.fill();
       x.fillStyle = '#0078BF'; x.beginPath(); x.arc(sx + sr * 1.2, sy, sr, 0, 7); x.fill();
@@ -600,7 +741,7 @@ void main(){
   });
 
   /* ================= 起動 ================= */
-  runSearch('', 'おまかせ');
+  runSearch({random:true, label:'おまかせ'});
 })();
 </script>
 </body>
