@@ -138,6 +138,25 @@ input[type=range]::-moz-range-thumb{width:32px;height:32px;border:0;border-radiu
 .tile img{display:block;width:100%;aspect-ratio:3/4;object-fit:cover;background:#fff;}
 .tile span{display:block;margin-top:6px;font-size:12px;font-weight:700;}
 
+/* 動画 */
+.modesw{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);display:flex;border:2px solid var(--over);background:var(--paper);border-radius:99px;overflow:hidden;}
+.modesw button{border:0;background:transparent;padding:4px 18px;font-weight:900;font-size:13px;min-height:34px;color:var(--over);}
+.modesw button[aria-pressed="true"]{background:var(--pink);color:var(--on-pink);}
+.rec{position:absolute;right:8px;top:8px;padding:1px 10px;background:var(--pink);color:var(--on-pink);border:2px solid var(--over);font-weight:900;font-size:13px;font-variant-numeric:tabular-nums;}
+.rec::before{content:"";display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--over);margin-right:6px;animation:blink 1s steps(2,start) infinite;}
+@keyframes blink{50%{opacity:0}}
+@media (prefers-reduced-motion:reduce){.rec::before{animation:none}}
+#shutter[data-mode="video"]{background:var(--blue);box-shadow:5px 5px 0 var(--pink);}
+#shutter[data-mode="video"]::after{border-color:#fff;}
+#shutter[data-rec="1"]{border-radius:24px;background:var(--pink);box-shadow:5px 5px 0 var(--blue);}
+#shutter[data-rec="1"]::after{border-radius:10px;border-style:solid;}
+.pic{position:relative;}
+.badge{position:absolute;right:6px;bottom:6px;background:var(--pink);color:var(--on-pink);font-style:normal;font-weight:900;font-size:12px;padding:0 8px;border:2px solid var(--over);}
+.viewer{position:fixed;inset:0;z-index:55;background:rgba(0,20,80,.88);display:flex;align-items:center;justify-content:center;padding:calc(16px + env(safe-area-inset-top,0px)) 16px calc(16px + env(safe-area-inset-bottom,0px));}
+.vbox{display:flex;flex-direction:column;align-items:center;gap:14px;max-width:100%;}
+.vbox video{max-width:min(92vw,420px);max-height:68vh;background:#000;border:2px solid #fff;}
+.vbtns{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;}
+.vbtns .btn{min-width:96px;}
 /* ナビ */
 .nav{position:fixed;left:0;right:0;bottom:0;z-index:40;background:var(--paper);border-top:2px solid var(--over);padding-bottom:env(safe-area-inset-bottom,0px);}
 .bar{display:flex;height:8px;}
@@ -169,6 +188,11 @@ input[type=range]::-moz-range-thumb{width:32px;height:32px;border:0;border-radiu
         <canvas id="cv" width="720" height="960" role="img" aria-label="2色リソグラフ風のプレビュー"></canvas>
         <i class="cm tl"></i><i class="cm tr"></i><i class="cm bl"></i><i class="cm br"></i>
         <span class="chip" id="chip">カメラはオフ</span>
+        <span class="rec" id="rec" hidden>0:00</span>
+        <div class="modesw" id="modesw" role="group" aria-label="撮影モード" hidden>
+          <button type="button" data-c="photo" aria-pressed="true">写真</button>
+          <button type="button" data-c="video" aria-pressed="false">動画</button>
+        </div>
         <div class="flash" id="flash"></div>
         <div class="start" id="start">
           <button class="btn primary" id="camBtn" type="button">カメラをはじめる</button>
@@ -256,6 +280,17 @@ input[type=range]::-moz-range-thumb{width:32px;height:32px;border:0;border-radiu
 <input type="file" id="file" accept="image/*" hidden>
 <input type="file" id="fileCam" accept="image/*" capture="environment" hidden>
 <video id="video" playsinline muted style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none"></video>
+<div class="viewer" id="vviewer" hidden role="dialog" aria-modal="true" aria-label="動画">
+  <div class="vbox">
+    <video id="vplayer" controls playsinline loop></video>
+    <div class="vbtns">
+      <button class="btn pink" id="vvShare" type="button" hidden>保存・共有</button>
+      <button class="btn" id="vvDl" type="button">ダウンロード</button>
+      <button class="btn" id="vvDel" type="button">削除</button>
+      <button class="btn" id="vvClose" type="button">閉じる</button>
+    </div>
+  </div>
+</div>
 <div class="toast" id="toast" hidden role="status" aria-live="polite"></div>
 
 <script>
@@ -425,7 +460,7 @@ void main(){
       t.oncomplete = () => r(); t.onerror = () => r();
     } catch (e) { r(); } }); }
   };
-  const persist = s => DB.put({id:s.id, ts:s.ts, orig:s.orig, thumb:s.thumb, cfg:s.cfg, w:s.w, h:s.h});
+  const persist = s => DB.put({id:s.id, ts:s.ts, orig:s.orig, thumb:s.thumb, cfg:s.cfg, w:s.w, h:s.h, type:s.type || 'photo', dur:s.dur || 0});
   function setThumbUrl(s){ if (s.thumbUrl) URL.revokeObjectURL(s.thumbUrl); s.thumbUrl = URL.createObjectURL(s.thumb || s.orig); }
 
   /* ================= Demo image ================= */
@@ -468,7 +503,7 @@ void main(){
       if (view !== 'cam') { st.getTracks().forEach(t => t.stop()); return false; }
       cam.stream = st; video.srcObject = st; await video.play();
       cam.mirror = st.getVideoTracks()[0].getSettings().facingMode !== 'environment';
-      cam.live = true; startEl.hidden = true; chip.hidden = true;
+      cam.live = true; startEl.hidden = true; chip.hidden = true; $('#modesw').hidden = false;
       return true;
     } catch (e) {
       if (quiet) return false;
@@ -539,7 +574,6 @@ void main(){
       toast('刷れました。', {label:'編集する', fn:() => openEdit(s)});
     } finally { busy = false; }
   }
-  $('#shutter').addEventListener('click', shootCam);
 
   /* ================= Import photo ================= */
   function onPhoto(e){
@@ -625,7 +659,7 @@ void main(){
     };
     img.src = url;
   }
-  function openEdit(s){ edit.shot = s; go('edit'); }
+  function openEdit(s){ if (s.type === 'video') { openVideo(s); return; } edit.shot = s; go('edit'); }
 
   /* ================= Export ================= */
   function mark(x, cx, cy, r, color, dx, dy){
@@ -708,19 +742,123 @@ void main(){
     $('#galEmpty').hidden = shots.length > 0;
     shots.forEach((s, i) => {
       const b = document.createElement('button'); b.type = 'button'; b.className = 'tile';
-      b.setAttribute('aria-label', `No.${pad(shots.length - i)} を編集する`);
+      b.setAttribute('aria-label', `No.${pad(shots.length - i)} を${s.type === 'video' ? '見る' : '編集する'}`);
       const im = document.createElement('img'); im.src = s.thumbUrl; im.alt = '';
       const d = new Date(s.ts);
       const t = document.createElement('span'); t.textContent = `No.${String(shots.length - i).padStart(3, '0')}　${d.getMonth()+1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-      b.append(im, t); b.addEventListener('click', () => openEdit(s)); g.append(b);
+      const pic = document.createElement('div'); pic.className = 'pic'; pic.append(im);
+      if (s.type === 'video') { const bd = document.createElement('i'); bd.className = 'badge'; bd.textContent = '▶ ' + fmtDur(s.dur || 0); pic.append(bd); }
+      b.append(pic, t); b.addEventListener('click', () => openEdit(s)); g.append(b);
     });
   }
+
+  /* ================= 動画 ================= */
+  const fmtDur = sec => `${Math.floor(sec / 60)}:${pad(Math.floor(sec % 60))}`;
+  let capMode = 'photo';
+  const modesw = $('#modesw'), recEl = $('#rec'), shutterEl = $('#shutter');
+  const rec = {mr:null, chunks:[], t0:0, timer:null, audio:null, thumbP:null, dur:0};
+  const canRecord = !!(window.MediaRecorder && canvas.captureStream);
+  if (!canRecord) modesw.querySelector('[data-c="video"]').hidden = true;
+  modesw.addEventListener('click', e => {
+    const b = e.target.closest('[data-c]'); if (!b || rec.mr) return;
+    capMode = b.dataset.c;
+    modesw.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    shutterEl.dataset.mode = capMode;
+    shutterEl.setAttribute('aria-label', capMode === 'video' ? '録画の開始と停止' : 'シャッター');
+  });
+  shutterEl.addEventListener('click', () => { if (capMode === 'video') { rec.mr ? stopRec() : startRec(); } else shootCam(); });
+
+  async function startRec(){
+    if (!cam.live) { toast('先に「カメラをはじめる」を押してください。'); return; }
+    if (!canRecord) { toast('このブラウザでは動画を撮れません。'); return; }
+    if (busy) return; busy = true;
+    try {
+      rec.thumbP = thumbBlob(canvas);
+      const cs = canvas.captureStream(30);
+      const tracks = [...cs.getVideoTracks()];
+      try {
+        rec.audio = await navigator.mediaDevices.getUserMedia({audio:true});
+        tracks.push(...rec.audio.getAudioTracks());
+      } catch (e) { rec.audio = null; toast('マイクが使えないので、音なしで録画します。'); }
+      const types = ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
+      const mime = types.find(t => MediaRecorder.isTypeSupported(t)) || '';
+      const opts = {videoBitsPerSecond:4000000}; if (mime) opts.mimeType = mime;
+      const mr = new MediaRecorder(new MediaStream(tracks), opts);
+      rec.chunks = [];
+      mr.ondataavailable = e => { if (e.data && e.data.size) rec.chunks.push(e.data); };
+      mr.onstop = () => finishRec(mr.mimeType || mime || 'video/webm');
+      mr.start(1000);
+      rec.mr = mr; rec.t0 = Date.now();
+      shutterEl.dataset.rec = '1'; recEl.hidden = false; recEl.textContent = '0:00';
+      $('#flip').disabled = true;
+      rec.timer = setInterval(() => {
+        const sec = (Date.now() - rec.t0) / 1000; recEl.textContent = fmtDur(sec);
+        if (sec >= 60) stopRec();
+      }, 250);
+    } catch (e) {
+      console.error(e); toast('録画を始められませんでした。');
+      if (rec.audio) { rec.audio.getTracks().forEach(t => t.stop()); rec.audio = null; }
+    } finally { busy = false; }
+  }
+  function stopRec(){
+    const mr = rec.mr; if (!mr) return;
+    rec.mr = null; clearInterval(rec.timer); rec.dur = (Date.now() - rec.t0) / 1000;
+    shutterEl.dataset.rec = '0'; recEl.hidden = true; $('#flip').disabled = false;
+    try { mr.stop(); } catch (e) { console.error(e); }
+  }
+  async function finishRec(mime){
+    if (rec.audio) { rec.audio.getTracks().forEach(t => t.stop()); rec.audio = null; }
+    const blob = new Blob(rec.chunks, {type:(mime || 'video/webm').split(';')[0]});
+    rec.chunks = [];
+    if (blob.size < 1000) { toast('録画できませんでした。'); return; }
+    const thumb = await rec.thumbP;
+    const s = {id:Date.now().toString(36) + Math.random().toString(36).slice(2, 6), ts:Date.now(), type:'video', orig:blob, thumb,
+      cfg:Object.assign({}, P), w:720, h:960, dur:Math.round(rec.dur), thumbUrl:null};
+    setThumbUrl(s); shots.unshift(s); persist(s); updateCount(); updateLast();
+    toast('動画を撮りました。', {label:'見る', fn:() => openVideo(s)});
+  }
+
+  const vv = $('#vviewer'), vp = $('#vplayer'); let vcur = null, vurl = null, vArm;
+  const videoName = s => { const d = new Date(s.ts); return `riso-${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}.${/mp4/.test(s.orig.type) ? 'mp4' : 'webm'}`; };
+  function openVideo(s){
+    vcur = s; vurl = URL.createObjectURL(s.orig); vp.src = vurl; vv.hidden = false;
+    let ok = false;
+    try { ok = !!(navigator.canShare && navigator.canShare({files:[new File([s.orig], videoName(s), {type:s.orig.type})]})); } catch (e) {}
+    $('#vvShare').hidden = !ok;
+    $('#vvClose').focus(); vp.play().catch(() => {});
+  }
+  function closeVideo(){
+    vp.pause(); vp.removeAttribute('src'); try { vp.load(); } catch (e) {}
+    if (vurl) URL.revokeObjectURL(vurl); vurl = null; vcur = null; vv.hidden = true;
+  }
+  $('#vvClose').addEventListener('click', closeVideo);
+  vv.addEventListener('click', e => { if (e.target === vv) closeVideo(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !vv.hidden) closeVideo(); });
+  $('#vvShare').addEventListener('click', async () => {
+    if (!vcur) return;
+    try { await navigator.share({files:[new File([vcur.orig], videoName(vcur), {type:vcur.orig.type})], title:'リソカメラ'}); }
+    catch (e) { if (!e || e.name !== 'AbortError') toast('共有できませんでした。「ダウンロード」をお試しください。'); }
+  });
+  $('#vvDl').addEventListener('click', () => { if (vcur) { download(vcur.orig, videoName(vcur)); toast('ダウンロードしました。'); } });
+  $('#vvDel').addEventListener('click', e => {
+    const b = e.currentTarget;
+    if (b.dataset.armed !== '1') {
+      b.dataset.armed = '1'; b.textContent = 'もう一度押すと削除';
+      clearTimeout(vArm); vArm = setTimeout(() => { b.dataset.armed = '0'; b.textContent = '削除'; }, 3000); return;
+    }
+    clearTimeout(vArm); b.dataset.armed = '0'; b.textContent = '削除';
+    const s = vcur; if (!s) return;
+    const i = shots.indexOf(s); if (i >= 0) shots.splice(i, 1);
+    URL.revokeObjectURL(s.thumbUrl); DB.del(s.id); closeVideo(); updateCount(); updateLast(); if (view === 'gal') renderGrid();
+  });
 
   /* ================= Navigation ================= */
   const views = {cam:$('#v-cam'), edit:$('#v-edit'), gal:$('#v-gal')};
   function go(v){
     if (view === 'edit' && v !== 'edit') persistEdit();
     if (view === 'cam' && v !== 'cam') {
+      if (rec.mr) stopRec();
+      $('#modesw').hidden = true;
       if (cam.stream) cam.stream.getTracks().forEach(t => t.stop());
       cam.stream = null; cam.live = false;
     }
@@ -732,10 +870,10 @@ void main(){
     window.scrollTo(0, 0);
     if (v === 'cam') {
       $('#sheetCam').prepend(canvas); setSize(4 / 3);
-      startEl.hidden = false; chip.hidden = false;
+      startEl.hidden = false; chip.hidden = false; $('#modesw').hidden = true;
       upload(demo); dirty = true; startCamera(true);
     } else if (v === 'edit') {
-      if (!edit.shot || shots.indexOf(edit.shot) < 0) edit.shot = shots[0] || null;
+      if (!edit.shot || shots.indexOf(edit.shot) < 0) edit.shot = shots.find(x => x.type !== 'video') || null;
       $('#editEmpty').hidden = !!edit.shot; $('#editBody').hidden = !edit.shot;
       if (edit.shot) {
         $('#sheetEdit').prepend(canvas);
