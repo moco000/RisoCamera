@@ -573,6 +573,7 @@ void main(){
         title: p.title.replace(/^File:/, '').replace(/\.[a-z0-9]+$/i, '').replace(/_/g, ' '),
         thumb: ii.thumburl,
         big: ii.thumburl.replace(/\/\d+px-/, `/${w}px-`),
+        urls: [...new Set([w, w > 1280 ? 1280 : 960].map(ww => ii.thumburl.replace(/\/\d+px-/, `/${ww}px-`)).concat([ii.thumburl]))],
         page: ii.descriptionurl,
         author: plain(em.Artist && em.Artist.value) || '作者不明',
         license: plain(em.LicenseShortName && em.LicenseShortName.value) || 'ライセンスはリンク先で確認',
@@ -613,7 +614,7 @@ void main(){
     const dLat = rM / 111320, dLon = rM / (111320 * Math.max(.2, Math.cos(rad(lat))));
     const params = new URLSearchParams({
       access_token: token,
-      fields:'id,geometry,computed_geometry,is_pano,captured_at,compass_angle,computed_compass_angle,thumb_256_url,thumb_2048_url',
+      fields:'id,geometry,computed_geometry,is_pano,captured_at,compass_angle,computed_compass_angle,thumb_256_url,thumb_1024_url,thumb_2048_url',
       bbox:`${lon - dLon},${lat - dLat},${lon + dLon},${lat + dLat}`, limit:'200', is_pano:'true'
     });
     let r = await fetch('https://graph.mapillary.com/images?' + params.toString());
@@ -638,6 +639,7 @@ void main(){
         src:'mly', id:d.id, compass:comp,
         title: ds ? `Mapillary ${ds}` : 'Mapillary',
         thumb: d.thumb_256_url || d.thumb_2048_url, big: d.thumb_2048_url,
+        urls: [d.thumb_2048_url, d.thumb_1024_url, d.thumb_256_url].filter(Boolean),
         page: `https://www.mapillary.com/app/?pKey=${d.id}&lat=${la}&lng=${lo}&z=18&focus=photo`,
         author: 'Mapillary contributors', license: 'CC BY-SA 4.0',
         lat: la, lon: lo, dist: distM(lat, lon, la, lo)
@@ -757,35 +759,51 @@ void main(){
     const seq = ++loadSeq; loading = true;
     current = it; markCurrent(); clearArrows();
     $('#credit').textContent = '読み込み中…';
-    const img = new Image(); img.crossOrigin = 'anonymous';
-    img.onload = () => {
+    const urls = (it.urls && it.urls.length) ? it.urls : [it.big];
+    let lastErr = '';
+    const attempt = i => {
       if (seq !== loadSeq) return;
-      try {
-        const big = img.naturalWidth > 2048 && MAXTEX >= 4096;
-        const W = big ? 4096 : 2048, H = W / 2;
-        const c = document.createElement('canvas'); c.width = W; c.height = H;
-        c.getContext('2d').drawImage(img, 0, 0, W, H);
-        const had = hasTex;
-        if (had) { const t = texC; texC = texP; texP = t; VP.yaw = V.yaw; VP.pitch = V.pitch; VP.fov = V.fov; INK.prev = INK.cur; }
-        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texC);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c);
-        hasTex = true;
-        INK.cur = setFor(it); if (!had) INK.prev = INK.cur;
-        renderLegend(INK.cur);
-        if (opts.bearing != null && it.compass != null) { V.yaw = -rad(opts.bearing - it.compass); V.pitch = 0; }
-        else if (opts.bearing != null) { V.pitch = 0; }
-        else { V.yaw = 0; V.pitch = 0; V.fov = 1.35; }
-        vy = vp = 0;
-        if (had && P.anim) startTransition(); else TR.on = false;
-        loading = false; dirty = true;
-        showCredit(it); loadNeighbors(it);
-      } catch (e) { console.error(e); loading = false; msg('この写真は表示できませんでした。別の写真を選んでください。'); $('#credit').textContent = ''; }
+      if (i >= urls.length) {
+        loading = false; $('#credit').textContent = '';
+        msg(`この写真は読み込めませんでした${lastErr ? '（' + lastErr + '）' : ''}。別の写真を選んでください。`);
+        return;
+      }
+      const img = new Image(); img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        if (seq !== loadSeq) return;
+        let nt = null;
+        try {
+          const big = img.naturalWidth > 2048 && MAXTEX >= 4096;
+          const W = big ? 4096 : 2048, H = W / 2;
+          const c = document.createElement('canvas'); c.width = W; c.height = H;
+          c.getContext('2d').drawImage(img, 0, 0, W, H);
+          nt = makeTex();
+          gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, nt);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c);   // 失敗しやすいのでここで先に試す
+          const had = hasTex;
+          if (had) { gl.deleteTexture(texP); texP = texC; VP.yaw = V.yaw; VP.pitch = V.pitch; VP.fov = V.fov; INK.prev = INK.cur; }
+          else { gl.deleteTexture(texC); }
+          texC = nt; hasTex = true;
+          INK.cur = setFor(it); if (!had) INK.prev = INK.cur;
+          renderLegend(INK.cur);
+          if (opts.bearing != null && it.compass != null) { V.yaw = -rad(opts.bearing - it.compass); V.pitch = 0; }
+          else if (opts.bearing != null) { V.pitch = 0; }
+          else { V.yaw = 0; V.pitch = 0; V.fov = 1.35; }
+          vy = vp = 0;
+          if (had && P.anim) startTransition(); else TR.on = false;
+          loading = false; dirty = true;
+          showCredit(it); loadNeighbors(it);
+        } catch (e) {
+          console.error(e);
+          if (nt) { try { gl.deleteTexture(nt); } catch (_) {} }
+          lastErr = '画像を取り込めませんでした';
+          attempt(i + 1);
+        }
+      };
+      img.onerror = () => { lastErr = '読み込みエラー（通信、または配信元の設定）'; attempt(i + 1); };
+      img.src = urls[i];
     };
-    img.onerror = () => {
-      if (seq !== loadSeq) return;
-      loading = false; $('#credit').textContent = ''; msg('この写真は読み込めませんでした。別の写真を選んでください。');
-    };
-    img.src = it.big;
+    attempt(0);
   }
   function showCredit(it){
     const c = $('#credit'); c.textContent = '';
