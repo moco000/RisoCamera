@@ -72,6 +72,13 @@ h1::after{content:attr(data-t);position:absolute;left:3px;top:2px;color:var(--pi
 .cm.bl{left:-20px;bottom:-20px;background-position:0 0,100% 100%;}
 .cm.br{right:-20px;bottom:-20px;background-position:100% 0,0 100%;}
 .chip{position:absolute;left:8px;top:8px;max-width:calc(100% - 16px);padding:1px 9px;background:var(--paper);border:2px solid var(--over);font-size:12px;font-weight:700;pointer-events:none;}
+.arrows{position:absolute;inset:0;overflow:hidden;pointer-events:none;transition:opacity .15s;}
+.arrows.busy{opacity:0;}
+.arrow{position:absolute;width:56px;height:56px;margin:0;padding:0;border:0;background:transparent;pointer-events:auto;cursor:pointer;}
+.arrow svg{display:block;width:100%;height:100%;}
+.arrows.busy .arrow{pointer-events:none;}
+.legend{display:flex;flex-wrap:wrap;gap:2px 12px;margin:2px 2px 6px;font-size:12px;font-weight:700;}
+.lg i{display:inline-block;width:12px;height:12px;border-radius:50%;margin-right:5px;border:1.5px solid var(--over);vertical-align:-1px;}
 .credit{margin:0 2px 4px;font-size:12px;line-height:1.5;}
 
 .tools{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 4px;}
@@ -142,9 +149,11 @@ input[type=range]::-moz-range-thumb{width:32px;height:32px;border:0;border-radiu
       <div class="sheet" id="sheet">
         <canvas id="cv" width="720" height="900" role="img" aria-label="2色刷り風に加工された360度写真。ドラッグで見回せます"></canvas>
         <i class="cm tl"></i><i class="cm tr"></i><i class="cm bl"></i><i class="cm br"></i>
+        <div class="arrows" id="arrows"></div>
         <span class="chip" id="chip">ドラッグで見回す・ピンチで拡大</span>
       </div>
     </div>
+    <p class="legend" id="legend" aria-label="今のインク"></p>
     <p class="credit" id="credit"></p>
     <div class="tools">
       <button class="btn pink" id="saveBtn" type="button">この景色を保存</button>
@@ -164,14 +173,20 @@ input[type=range]::-moz-range-thumb{width:32px;height:32px;border:0;border-radiu
         <button type="button" role="radio" aria-checked="false" data-m="1">ざらざら</button>
         <button type="button" role="radio" aria-checked="false" data-m="2">ベタ</button>
       </div>
+      <div class="sl" style="grid-template-columns:auto 1fr;gap:10px;align-items:center">
+        <label for="inkset">インクセット</label>
+        <select id="inkset" style="min-height:44px;border:2px solid var(--over);border-radius:3px;background:#FBFAF7;padding:4px 8px;font-weight:700;color:var(--over);width:100%">
+          <option value="auto">場所に合わせて自動</option>
+        </select>
+      </div>
       <div id="sliders" style="display:grid;gap:8px"></div>
       <div class="toggles">
-        <button class="tg" id="swap" type="button" aria-pressed="false">色を入れ替え</button>
-        <button class="tg" id="auto" type="button" aria-pressed="true">自動でまわす</button>
+        <button class="tg" id="anim" type="button" aria-pressed="true">移動で新しい版を刷る</button>
+        <button class="tg" id="auto" type="button" aria-pressed="false">自動でまわす</button>
         <button class="tg" id="frame" type="button" aria-pressed="true">フチをつけて保存</button>
       </div>
     </div>
-    <p class="note">写真は Wikimedia Commons と Mapillary の公開素材です。作者名とライセンスは写真の下に表示され、保存した画像にも入ります。緯度経度は、Googleマップで場所を長押しすると出る数字をそのまま貼れます。</p>
+    <p class="note">色の傾向で版を分けています（暗い所や建物＝1版、緑＝2版、赤〜オレンジなど目立つ色＝3版）。人や標識を見分けているわけではありません。写真は Wikimedia Commons と Mapillary の公開素材です。作者名とライセンスは写真の下に表示され、保存した画像にも入ります。緯度経度は、Googleマップで場所を長押しすると出る数字をそのまま貼れます。</p>
   </div>
 </div>
 <div class="toast" id="toast" hidden role="status" aria-live="polite"></div>
@@ -183,34 +198,40 @@ input[type=range]::-moz-range-thumb{width:32px;height:32px;border:0;border-radiu
   const gl = cv.getContext('webgl', {preserveDrawingBuffer:true, antialias:false, alpha:false});
   if (!gl) { $('#nogl').hidden = false; return; }
 
-  /* ================= Shader（360度投影 + 2色刷り） ================= */
+  /* ================= Shader（360度投影 + 版分解 + 刷りアニメ） ================= */
   const VS = `attribute vec2 a; void main(){ gl_Position = vec4(a,0.,1.); }`;
   const FS = `
 precision highp float;
-uniform sampler2D tex;
+uniform sampler2D texC;
+uniform sampler2D texP;
 uniform vec2 res, off;
-uniform float yaw, pitch, tanHalf, cell, grain, contrast, bright, mode, ks;
-uniform vec3 inkA, inkB, paper;
+uniform vec3 vC, vP;
+uniform float cell, grain, contrast, bright, mode, ks, tr;
+uniform vec3 inkC0, inkC1, inkC2, inkP0, inkP1, inkP2, paper;
 float hash(vec2 p){ vec3 p3=fract(vec3(p.xyx)*.1031); p3+=dot(p3,p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
 float vnoise(vec2 p){
   vec2 i=floor(p), f=fract(p); f=f*f*(3.-2.*f);
   return mix(mix(hash(i),hash(i+vec2(1.,0.)),f.x), mix(hash(i+vec2(0.,1.)),hash(i+vec2(1.,1.)),f.x), f.y);
 }
-vec3 pano(vec2 px){
-  vec2 n=(px/res)*2.-1.;
-  vec3 d=normalize(vec3(n.x*(res.x/res.y)*tanHalf, n.y*tanHalf, -1.));
-  float cp=cos(pitch), sp=sin(pitch);
-  d=vec3(d.x, d.y*cp-d.z*sp, d.y*sp+d.z*cp);
-  float cy=cos(yaw), sy=sin(yaw);
-  d=vec3(d.x*cy+d.z*sy, d.y, -d.x*sy+d.z*cy);
-  float u=atan(d.x,-d.z)/6.28318+.5;
-  float v=asin(clamp(d.y,-1.,1.))/3.14159+.5;
-  return texture2D(tex,vec2(u,v)).rgb;
-}
-float lum(vec2 px){
-  vec3 c=(pano(px+vec2(.4,.4))+pano(px-vec2(.4,.4)))*.5;
+#define MAKE_PANO(NAME,TEX,V) vec3 NAME(vec2 px){ vec2 n=(px/res)*2.-1.; vec3 d=normalize(vec3(n.x*(res.x/res.y)*V.z, n.y*V.z, -1.)); float cp=cos(V.y), sp=sin(V.y); d=vec3(d.x, d.y*cp-d.z*sp, d.y*sp+d.z*cp); float cy=cos(V.x), sy=sin(V.x); d=vec3(d.x*cy+d.z*sy, d.y, -d.x*sy+d.z*cy); float u=atan(d.x,-d.z)/6.28318+.5; float v=asin(clamp(d.y,-1.,1.))/3.14159+.5; return texture2D(TEX,vec2(u,v)).rgb; }
+MAKE_PANO(panoC,texC,vC)
+MAKE_PANO(panoP,texP,vP)
+vec3 colC(vec2 px){ return (panoC(px+vec2(.4,.4))+panoC(px-vec2(.4,.4)))*.5; }
+vec3 colP(vec2 px){ return (panoP(px+vec2(.4,.4))+panoP(px-vec2(.4,.4)))*.5; }
+
+// 色の傾向から、3枚の版（建物など／植物／目立つ色）に分ける
+void dens(vec3 c, out float dS, out float dN, out float dA){
   float l=dot(c,vec3(.299,.587,.114));
-  return clamp((l-.5)*contrast+.5+bright,0.,1.);
+  float mx=max(c.r,max(c.g,c.b)), mn=min(c.r,min(c.g,c.b));
+  float sat=(mx-mn)/max(mx,.001);
+  float veg=smoothstep(.015,.10,c.g-max(c.r,c.b))*smoothstep(.10,.28,sat);
+  float warm=smoothstep(.20,.46,c.r-c.b)*smoothstep(.32,.62,sat);
+  float acc=warm*(1.-veg);
+  float L=clamp((l-.5)*contrast+.5+bright,0.,1.);
+  float base=clamp(pow(1.-L,1.7)*1.15,0.,1.);
+  dS=base*(1.-veg)*(1.-acc*.9);
+  dN=veg*clamp(pow(1.-L,.9)*1.25+.2,0.,1.);
+  dA=acc*clamp(.55+sat*.5,0.,1.);
 }
 float screenH(vec2 p,float a){
   float c=cos(a), s=sin(a);
@@ -239,17 +260,52 @@ float coverage(float d, vec2 p, float a){
   cov*=1.-grain*.3*vnoise(p*.03+a*3.);
   return cov;
 }
+// ローラーが紙の上を通るように、新しい版が刷られていく範囲
+float sweep(vec2 dir, float prog, out float band){
+  vec2 uv=gl_FragCoord.xy/res;
+  float c=dot(uv-.5,dir)+.5;
+  c+=(vnoise(gl_FragCoord.xy*.02)-.5)*.05;
+  float front=prog*1.2-.1;
+  band=exp(-pow((c-front)/.035,2.));
+  return 1.-smoothstep(front-.02,front+.02,c);
+}
 void main(){
   vec2 fc=gl_FragCoord.xy/ks;
-  vec2 pa=fc+off*.5, pb=fc-off*.5;
-  float La=lum(pa*ks), Lb=lum(pb*ks);
-  float dA=clamp(pow(1.-La,1.7)*1.15,0.,1.);
-  float dB=pow(clamp(1.-Lb*.9,0.,1.),1.15);
-  float cA=coverage(dA,pa,1.309);
-  float cB=coverage(dB,pb,.262);
-  vec3 col=paper;
-  col*=mix(vec3(1.),inkB,cB*.92);
-  col*=mix(vec3(1.),inkA,cA*.96);
+  vec2 oS=off*.5, oN=-off*.5, oA=vec2(-off.y,off.x)*.6;
+  bool trans=(tr>=0.&&tr<1.);
+  float pS=clamp(tr/.55,0.,1.), pN=clamp((tr-.2)/.55,0.,1.), pA=clamp((tr-.45)/.55,0.,1.);
+  float bS=0., bN=0., bA=0., wS=1., wN=1., wA=1.;
+  vec2 sh=vec2(0.);
+  if(trans){
+    wS=sweep(vec2(0.,1.),pS,bS);
+    wN=sweep(vec2(1.,0.),pN,bN);
+    wA=sweep(vec2(0.,-1.),pA,bA);
+    sh=vec2(6.,-4.);
+  }
+  vec2 pcS=fc+oS+sh*(1.-pS);
+  vec2 pcN=fc+oN+sh*(1.-pN)*vec2(-1.,1.);
+  vec2 pcA=fc+oA+sh*(1.-pA);
+  float a,b,c;
+  dens(colC(pcS*ks),a,b,c); float dS=a;
+  dens(colC(pcN*ks),a,b,c); float dN=b;
+  dens(colC(pcA*ks),a,b,c); float dA=c;
+  float cS=min(1.,coverage(dS,pcS,1.309)*(1.+.5*bS));
+  float cN=min(1.,coverage(dN,pcN,.262)*(1.+.5*bN));
+  float cA=min(1.,coverage(dA,pcA,.785)*(1.+.5*bA));
+  vec3 fS=mix(vec3(1.),inkC0,cS*.96);
+  vec3 fN=mix(vec3(1.),inkC1,cN*.92);
+  vec3 fA=mix(vec3(1.),inkC2,cA*.95);
+  if(trans){
+    vec2 qS=fc+oS, qN=fc+oN, qA=fc+oA;
+    dens(colP(qS*ks),a,b,c); float eS=a;
+    dens(colP(qN*ks),a,b,c); float eN=b;
+    dens(colP(qA*ks),a,b,c); float eA=c;
+    vec3 gS=mix(vec3(1.),inkP0,coverage(eS,qS,1.309)*.96);
+    vec3 gN=mix(vec3(1.),inkP1,coverage(eN,qN,.262)*.92);
+    vec3 gA=mix(vec3(1.),inkP2,coverage(eA,qA,.785)*.95);
+    fS=mix(gS,fS,wS); fN=mix(gN,fN,wN); fA=mix(gA,fA,wA);
+  }
+  vec3 col=paper*fS*fN*fA;
   col*=1.-.04*hash(gl_FragCoord.xy)-.03*vnoise(fc*.05);
   gl_FragColor=vec4(col,1.);
 }`;
@@ -271,30 +327,48 @@ void main(){
   gl.enableVertexAttribArray(aLoc);
   gl.vertexAttribPointer(aLoc, 2, gl.FLOAT, false, 0, 0);
   const U = {};
-  ['tex','res','off','yaw','pitch','tanHalf','cell','grain','contrast','bright','mode','ks','inkA','inkB','paper']
-    .forEach(n => U[n] = gl.getUniformLocation(prog, n));
-  const tex = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  ['texC','texP','res','off','vC','vP','cell','grain','contrast','bright','mode','ks','tr',
+   'inkC0','inkC1','inkC2','inkP0','inkP1','inkP2','paper'].forEach(n => U[n] = gl.getUniformLocation(prog, n));
+  function makeTex(){
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([244, 242, 237, 255]));
+    return t;
+  }
+  let texC = makeTex(), texP = makeTex();     // 現在の景色 / ひとつ前の景色
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-  gl.uniform1i(U.tex, 0);
+  gl.uniform1i(U.texC, 0); gl.uniform1i(U.texP, 1);
   const MAXTEX = gl.getParameter(gl.MAX_TEXTURE_SIZE) || 2048;
 
-  const BLUE = [0, .47, .75], PINK = [1, .28, .69], PAPER = [.97, .96, .95];
-  const P = {mode:0, dot:7, mis:6, grain:.5, contrast:1.25, bright:0, swap:false, frame:true, ang:.6};
-  const V = {yaw:0, pitch:0, fov:1.35};
-  let hasTex = false, dirty = true, auto = true, current = null;
+  /* ---- インクセット（場所ごとに変わる） ---- */
+  const BL = [0, .47, .75], PK = [1, .28, .69], GR = [0, .66, .36], OR = [1, .42, .18];
+  const SETS = [
+    {c:[BL, GR, OR],                 n:['青', '緑', '蛍光オレンジ']},
+    {c:[BL, PK, PK],                 n:['青', 'ピンク', 'ピンク']},
+    {c:[[.46,.36,.65], [1,.91,0], PK], n:['紫', '黄', '蛍光ピンク']},
+    {c:[[0,.51,.54], [1,.71,.07], [.95,.31,.38]], n:['ティール', 'ひまわり色', '赤']},
+    {c:[[.24,.33,.53], [.51,.85,.84], PK],        n:['ネイビー', 'ミント', '蛍光ピンク']},
+    {c:[BL, BL, OR],                 n:['青', '青', '蛍光オレンジ']},
+    {c:[[.57,.31,.45], GR, OR],      n:['バーガンディ', '緑', '蛍光オレンジ']}
+  ];
+  const INK = {cur:SETS[0], prev:SETS[0]};
+  const PAPER = [.97, .96, .95];
+  const P = {mode:0, dot:7, mis:6, grain:.5, contrast:1.25, bright:0, frame:true, ang:.6, anim:true, trans:1.6};
+  const V = {yaw:0, pitch:0, fov:1.35}, VP = {yaw:0, pitch:0, fov:1.35};
+  const TR = {on:false, t0:0, dur:1600};
+  let hasTex = false, dirty = true, auto = false, current = null;
   const pad = n => String(n).padStart(2, '0');
+  const easeIO = t => t * t * (3 - 2 * t);
 
-  function draw(){
+  function draw(final){
     gl.viewport(0, 0, cv.width, cv.height);
     gl.uniform2f(U.res, cv.width, cv.height);
-    gl.uniform1f(U.yaw, V.yaw);
-    gl.uniform1f(U.pitch, V.pitch);
-    gl.uniform1f(U.tanHalf, Math.tan(V.fov / 2));
+    gl.uniform3f(U.vC, V.yaw, V.pitch, Math.tan(V.fov / 2));
+    gl.uniform3f(U.vP, VP.yaw, VP.pitch, Math.tan(VP.fov / 2));
     gl.uniform1f(U.cell, P.dot);
     gl.uniform1f(U.ks, cv.width / 720);
     gl.uniform2f(U.off, Math.cos(P.ang) * P.mis, Math.sin(P.ang) * P.mis);
@@ -302,24 +376,26 @@ void main(){
     gl.uniform1f(U.contrast, P.contrast);
     gl.uniform1f(U.bright, P.bright);
     gl.uniform1f(U.mode, P.mode);
-    gl.uniform3fv(U.inkA, P.swap ? PINK : BLUE);
-    gl.uniform3fv(U.inkB, P.swap ? BLUE : PINK);
+    gl.uniform3fv(U.inkC0, INK.cur.c[0]); gl.uniform3fv(U.inkC1, INK.cur.c[1]); gl.uniform3fv(U.inkC2, INK.cur.c[2]);
+    gl.uniform3fv(U.inkP0, INK.prev.c[0]); gl.uniform3fv(U.inkP1, INK.prev.c[1]); gl.uniform3fv(U.inkP2, INK.prev.c[2]);
     gl.uniform3fv(U.paper, PAPER);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.uniform1f(U.tr, (TR.on && !final) ? easeIO(Math.min(1, (performance.now() - TR.t0) / TR.dur)) : -1);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texP);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texC);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
   /* ================= サイズ ================= */
   function resize(){
     const r = cv.getBoundingClientRect(); if (!r.width) return;
-    const w = Math.min(900, Math.round(r.width * Math.min(window.devicePixelRatio || 1, 2)));
+    const w = Math.min(820, Math.round(r.width * Math.min(window.devicePixelRatio || 1, 2)));
     cv.width = w; cv.height = Math.round(w * r.height / r.width); dirty = true;
   }
   if (window.ResizeObserver) new ResizeObserver(resize).observe(cv); else window.addEventListener('resize', resize);
   resize();
 
   /* ================= 操作（ドラッグ・ピンチ・ホイール・ジャイロ） ================= */
+  const arrowsEl = $('#arrows'); let loading = false;
   const ptrs = new Map(); let lastDist = 0, vy = 0, vp = 0, lastMoveT = 0;
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const dist = () => { const a = [...ptrs.values()]; return Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y); };
@@ -386,7 +462,12 @@ void main(){
         }
         if (auto && hasTex && !gyroOn) { V.yaw += .0012; dirty = true; }
       }
-      if (dirty && hasTex) { draw(); dirty = false; }
+      if (TR.on) {
+        if (performance.now() - TR.t0 >= TR.dur) TR.on = false;
+        dirty = true;
+      }
+      arrowsEl.classList.toggle('busy', TR.on || loading);
+      if (dirty && hasTex) { draw(false); dirty = false; updateArrows(); }
     } catch (e) { console.error(e); }
     requestAnimationFrame(tick);
   }
@@ -402,7 +483,8 @@ void main(){
     {k:'mis', label:'版ずれ', min:0, max:24, step:.5, fmt:v => v},
     {k:'grain', label:'インクのかすれ', min:0, max:1, step:.05, fmt:v => Math.round(v*100) + '%'},
     {k:'contrast', label:'コントラスト', min:.6, max:2.2, step:.05, fmt:v => v.toFixed(2)},
-    {k:'bright', label:'明るさ', min:-.3, max:.3, step:.01, fmt:v => (v > 0 ? '+' : '') + Math.round(v*100)}
+    {k:'bright', label:'明るさ', min:-.3, max:.3, step:.01, fmt:v => (v > 0 ? '+' : '') + Math.round(v*100)},
+    {k:'trans', label:'新しい版を刷る時間', min:.6, max:3, step:.1, fmt:v => v.toFixed(1) + '秒'}
   ];
   SL.forEach(s => {
     const d = document.createElement('div'); d.className = 'sl';
@@ -416,7 +498,8 @@ void main(){
     const b = e.target.closest('button[data-m]'); if (!b) return;
     P.mode = +b.dataset.m; $('#modes').querySelectorAll('button').forEach(x => x.setAttribute('aria-checked', String(x === b))); dirty = true;
   });
-  $('#swap').addEventListener('click', e => { P.swap = !P.swap; e.currentTarget.setAttribute('aria-pressed', String(P.swap)); dirty = true; });
+  $('#anim').addEventListener('click', e => { P.anim = !P.anim; e.currentTarget.setAttribute('aria-pressed', String(P.anim)); });
+  $('#inkset').addEventListener('change', () => { if (current) { INK.cur = setFor(current); renderLegend(INK.cur); dirty = true; } });
   $('#auto').addEventListener('click', e => { auto = !auto; e.currentTarget.setAttribute('aria-pressed', String(auto)); });
   $('#frame').addEventListener('click', e => { P.frame = !P.frame; e.currentTarget.setAttribute('aria-pressed', String(P.frame)); });
 
@@ -444,7 +527,7 @@ void main(){
     return (Math.abs(lat) <= 90 && Math.abs(lon) <= 180) ? {lat, lon} : null;
   }
 
-  let source = 'commons';
+  let source = 'commons', diag = '';
   const tokenEl = $('#token'), tokenBox = $('#tokenBox');
   try { tokenEl.value = localStorage.getItem('riso_mly') || ''; } catch (_) {}
   tokenEl.addEventListener('change', () => { try { localStorage.setItem('riso_mly', tokenEl.value.trim()); } catch (_) {} });
@@ -465,21 +548,28 @@ void main(){
       iiextmetadatafilter:'Artist|LicenseShortName|LicenseUrl', colimit:'50', coprimary:'primary'
     });
     if (random) params.set('gsrsort', 'random');
-    const r = await fetch(API + '?' + params.toString());
-    if (!r.ok) throw new Error('http ' + r.status);
-    const j = await r.json();
+    let j = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const r = await fetch(API + '?' + params.toString());
+      if (!r.ok) throw new Error('通信エラー ' + r.status);
+      j = await r.json();
+      if (j.error && attempt === 0 && params.has('gsrsort')) { params.delete('gsrsort'); continue; }
+      break;
+    }
+    if (j.error) throw new Error('Wikimedia: ' + (j.error.info || j.error.code));
     const pages = Object.values((j.query && j.query.pages) || {}).sort((a, b) => (a.index || 0) - (b.index || 0));
     const out = [];
     for (const p of pages) {
       const ii = p.imageinfo && p.imageinfo[0]; if (!ii || !ii.width || !ii.height || !ii.thumburl) continue;
       const ratio = ii.width / ii.height;
-      if (ratio < 1.9 || ratio > 2.1) continue;                        // 全周(2:1)のみ
+      if (ratio < 1.85 || ratio > 2.15) continue;                      // 全周(2:1)のみ
       if (!/^image\/(jpeg|png)$/.test(ii.mime)) continue;
-      if (ii.width < 1900) continue;
+      if (ii.width < 1500) continue;
       const w = STEPS.find(s => s <= ii.width) || 960;
       const em = ii.extmetadata || {};
       const co = p.coordinates && p.coordinates[0];
       const it = {
+        src:'commons',
         title: p.title.replace(/^File:/, '').replace(/\.[a-z0-9]+$/i, '').replace(/_/g, ' '),
         thumb: ii.thumburl,
         big: ii.thumburl.replace(/\/\d+px-/, `/${w}px-`),
@@ -491,6 +581,7 @@ void main(){
       if (center && it.lat != null) it.dist = distM(center.lat, center.lon, it.lat, it.lon);
       out.push(it);
     }
+    diag = `検索結果${pages.length}件のうち、全周写真は${out.length}件`;
     if (center) out.sort((a, b) => (a.dist == null) - (b.dist == null) || (a.dist || 0) - (b.dist || 0));
     return out;
   }
@@ -498,6 +589,9 @@ void main(){
     let list = await query(term ? `${CAT} ${term}` : CAT, random || !term);
     if (!list.length && term) list = await query(`${term} 360° panorama equirectangular`, false);
     return list;
+  }
+  async function findFallback(){
+    return query(CAT, true);
   }
   async function findNearCommons(lat, lon){
     const c = {lat, lon};
@@ -515,29 +609,47 @@ void main(){
   }
 
   /* --- Mapillary --- */
+  async function mlyFetch(lat, lon, rM, token){
+    const dLat = rM / 111320, dLon = rM / (111320 * Math.max(.2, Math.cos(rad(lat))));
+    const params = new URLSearchParams({
+      access_token: token,
+      fields:'id,geometry,computed_geometry,is_pano,captured_at,compass_angle,computed_compass_angle,thumb_256_url,thumb_2048_url',
+      bbox:`${lon - dLon},${lat - dLat},${lon + dLon},${lat + dLat}`, limit:'200', is_pano:'true'
+    });
+    let r = await fetch('https://graph.mapillary.com/images?' + params.toString());
+    let j = await r.json().catch(() => ({}));
+    if ((!r.ok || j.error) && r.status !== 401 && r.status !== 403) {            // is_pano が使えない場合に備えて再試行
+      params.delete('is_pano');
+      r = await fetch('https://graph.mapillary.com/images?' + params.toString());
+      j = await r.json().catch(() => ({}));
+    }
+    if (!r.ok || j.error) {
+      const e = new Error('Mapillary: ' + ((j.error && (j.error.message || j.error.type)) || ('HTTP ' + r.status)));
+      e.auth = r.status === 401 || r.status === 403 || /token|OAuth/i.test((j.error && j.error.message) || '');
+      throw e;
+    }
+    const raw = j.data || [];
+    const items = raw.filter(d => d.is_pano !== false && d.thumb_2048_url && (d.computed_geometry || d.geometry)).map(d => {
+      const [lo, la] = (d.computed_geometry || d.geometry).coordinates;
+      const date = d.captured_at ? new Date(d.captured_at) : null;
+      const ds = date ? `${date.getFullYear()}.${pad(date.getMonth() + 1)}.${pad(date.getDate())}` : '';
+      const comp = d.computed_compass_angle != null ? d.computed_compass_angle : (d.compass_angle != null ? d.compass_angle : null);
+      return {
+        src:'mly', id:d.id, compass:comp,
+        title: ds ? `Mapillary ${ds}` : 'Mapillary',
+        thumb: d.thumb_256_url || d.thumb_2048_url, big: d.thumb_2048_url,
+        page: `https://www.mapillary.com/app/?pKey=${d.id}&lat=${la}&lng=${lo}&z=18&focus=photo`,
+        author: 'Mapillary contributors', license: 'CC BY-SA 4.0',
+        lat: la, lon: lo, dist: distM(lat, lon, la, lo)
+      };
+    }).sort((a, b) => a.dist - b.dist);
+    return {items, rawCount: raw.length};
+  }
   async function findMapillary(lat, lon, token){
     for (const rM of [150, 500, 1500]) {
-      const dLat = rM / 111320, dLon = rM / (111320 * Math.max(.2, Math.cos(rad(lat))));
-      const params = new URLSearchParams({
-        access_token: token, fields:'id,geometry,is_pano,captured_at,thumb_256_url,thumb_2048_url',
-        bbox:`${lon - dLon},${lat - dLat},${lon + dLon},${lat + dLat}`, limit:'200', is_pano:'true'
-      });
-      const r = await fetch('https://graph.mapillary.com/images?' + params.toString());
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok || j.error) { const e = new Error('mly'); e.auth = r.status === 400 || r.status === 401 || r.status === 403; throw e; }
-      const items = (j.data || []).filter(d => d.is_pano !== false && d.thumb_2048_url && d.geometry && d.geometry.coordinates).map(d => {
-        const [lo, la] = d.geometry.coordinates;
-        const date = d.captured_at ? new Date(d.captured_at) : null;
-        const ds = date ? `${date.getFullYear()}.${pad(date.getMonth() + 1)}.${pad(date.getDate())}` : '';
-        return {
-          title: ds ? `Mapillary ${ds}` : 'Mapillary',
-          thumb: d.thumb_256_url || d.thumb_2048_url, big: d.thumb_2048_url,
-          page: `https://www.mapillary.com/app/?pKey=${d.id}&lat=${la}&lng=${lo}&z=18&focus=photo`,
-          author: 'Mapillary contributors', license: 'CC BY-SA 4.0',
-          lat: la, lon: lo, dist: distM(lat, lon, la, lo)
-        };
-      });
-      if (items.length) return items.sort((a, b) => a.dist - b.dist).slice(0, 40);
+      const r = await mlyFetch(lat, lon, rM, token);
+      if (r.items.length) return r.items.slice(0, 40);
+      diag = `Mapillary：半径${rM}m以内に全周写真なし（通常の写真は${r.rawCount}枚）`;
     }
     return [];
   }
@@ -594,27 +706,56 @@ void main(){
         list = await findPanos(o.term || '', !!o.random || !o.term);
       }
       if (seq !== searchSeq) return;
+      let note = '';
+      if (!list.length && source !== 'mly') {
+        const why = diag;
+        list = await findFallback(); if (seq !== searchSeq) return;
+        if (list.length) note = `「${label}」の近くには見つからなかったので、代わりに世界のおすすめを出しています。` + (lat != null || o.term ? 'もっと近い場所の写真はMapillaryで探せます。' : '');
+        else diag = why || diag;
+      }
       if (!list.length) {
         results = []; renderCards();
-        msg(source === 'mly' ? 'この周辺に360度写真は見つかりませんでした。別の場所で試してください。'
-          : (lat != null ? 'この近くにはWikimediaの360度写真がありません。Mapillaryに切り替えると見つかることがあります。' : '見つかりませんでした。別のキーワードか「おまかせ」をどうぞ。'));
+        msg((source === 'mly' ? 'この周辺に360度写真は見つかりませんでした。別の場所で試してください。' : '写真を取得できませんでした。')
+          + (diag ? `（${diag}）` : ''));
         return;
       }
       results = list; renderCards();
-      msg(`${list.length}枚見つかりました。下の一覧から選べます。`);
+      msg(note || `${list.length}枚見つかりました。下の一覧から選べます。`);
       loadPano(list[0]);
     } catch (e) {
       console.error(e);
       if (seq !== searchSeq) return;
-      msg(e && e.auth ? 'Mapillaryのトークンが正しくないようです。確認してください。' : '検索に失敗しました。通信状況を確認して、もう一度試してください。');
+      msg(e && e.auth ? 'Mapillaryのトークンが正しくないようです。確認してください。' : `検索に失敗しました（${(e && e.message) || '不明なエラー'}）。通信状況を確認して、もう一度試してください。`);
     }
   }
 
-  /* ================= パノラマ読み込み ================= */
-  let loadSeq = 0;
-  function loadPano(it){
-    const seq = ++loadSeq;
-    current = it; markCurrent();
+  /* ================= パノラマ読み込み・移動 ================= */
+  let loadSeq = 0, nbrSeq = 0, nbrs = [];
+  function setFor(it){
+    const sel = $('#inkset').value;
+    if (sel !== 'auto') return SETS[+sel];
+    const key = it.lat != null ? `${Math.floor(it.lat * 150)},${Math.floor(it.lon * 150)}` : (it.title || 'x');
+    let h = 0; for (const ch of key) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    return SETS[h % SETS.length];
+  }
+  function renderLegend(set){
+    const el = $('#legend'); el.textContent = '';
+    const roles = ['建物など', '植物', '目立つ色'];
+    set.c.forEach((c, i) => {
+      const sp = document.createElement('span'); sp.className = 'lg';
+      const dot = document.createElement('i'); dot.style.background = `rgb(${c.map(v => Math.round(v * 255)).join(',')})`;
+      sp.append(dot, document.createTextNode(`${roles[i]}＝${set.n[i]}`)); el.append(sp);
+    });
+  }
+  const sel0 = $('#inkset');
+  SETS.forEach((st, i) => { const o = document.createElement('option'); o.value = String(i); o.textContent = [...new Set(st.n)].join('・'); sel0.append(o); });
+
+  function startTransition(){ TR.on = true; TR.t0 = performance.now(); TR.dur = P.trans * 1000; }
+
+  function loadPano(it, opts){
+    opts = opts || {};
+    const seq = ++loadSeq; loading = true;
+    current = it; markCurrent(); clearArrows();
     $('#credit').textContent = '読み込み中…';
     const img = new Image(); img.crossOrigin = 'anonymous';
     img.onload = () => {
@@ -624,24 +765,97 @@ void main(){
         const W = big ? 4096 : 2048, H = W / 2;
         const c = document.createElement('canvas'); c.width = W; c.height = H;
         c.getContext('2d').drawImage(img, 0, 0, W, H);
-        gl.bindTexture(gl.TEXTURE_2D, tex);
+        const had = hasTex;
+        if (had) { const t = texC; texC = texP; texP = t; VP.yaw = V.yaw; VP.pitch = V.pitch; VP.fov = V.fov; INK.prev = INK.cur; }
+        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texC);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c);
-        hasTex = true; dirty = true;
-        V.yaw = 0; V.pitch = 0; V.fov = 1.35; vy = vp = 0;
-        showCredit(it);
-      } catch (e) { console.error(e); msg('この写真は表示できませんでした。別の写真を選んでください。'); $('#credit').textContent = ''; }
+        hasTex = true;
+        INK.cur = setFor(it); if (!had) INK.prev = INK.cur;
+        renderLegend(INK.cur);
+        if (opts.bearing != null && it.compass != null) { V.yaw = -rad(opts.bearing - it.compass); V.pitch = 0; }
+        else if (opts.bearing != null) { V.pitch = 0; }
+        else { V.yaw = 0; V.pitch = 0; V.fov = 1.35; }
+        vy = vp = 0;
+        if (had && P.anim) startTransition(); else TR.on = false;
+        loading = false; dirty = true;
+        showCredit(it); loadNeighbors(it);
+      } catch (e) { console.error(e); loading = false; msg('この写真は表示できませんでした。別の写真を選んでください。'); $('#credit').textContent = ''; }
     };
     img.onerror = () => {
       if (seq !== loadSeq) return;
-      $('#credit').textContent = ''; msg('この写真は読み込めませんでした。別の写真を選んでください。');
+      loading = false; $('#credit').textContent = ''; msg('この写真は読み込めませんでした。別の写真を選んでください。');
     };
     img.src = it.big;
   }
   function showCredit(it){
     const c = $('#credit'); c.textContent = '';
     const a = document.createElement('a'); a.href = it.page; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.textContent = it.title;
-    c.append(a, document.createTextNode(`　/ ${it.author} / ${it.license} / ${it.author === 'Mapillary contributors' ? 'Mapillary' : 'Wikimedia Commons'}`));
+    c.append(a, document.createTextNode(`　/ ${it.author} / ${it.license} / ${it.src === 'mly' ? 'Mapillary' : 'Wikimedia Commons'}`));
     $('#hereBtn').hidden = it.lat == null;
+  }
+
+  /* ---- 道路上の矢印（Mapillaryのときだけ） ---- */
+  function bearingTo(la1, lo1, la2, lo2){
+    const f1 = rad(la1), f2 = rad(la2), dl = rad(lo2 - lo1);
+    const y = Math.sin(dl) * Math.cos(f2), x = Math.cos(f1) * Math.sin(f2) - Math.sin(f1) * Math.cos(f2) * Math.cos(dl);
+    return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+  }
+  const DIRS = ['北', '北東', '東', '南東', '南', '南西', '西', '北西'];
+  function clearArrows(){ nbrs = []; arrowsEl.textContent = ''; }
+  async function loadNeighbors(it){
+    const seq = ++nbrSeq;
+    if (it.src !== 'mly' || it.lat == null) return;
+    const token = tokenEl.value.trim(); if (!token) return;
+    try {
+      const r = await mlyFetch(it.lat, it.lon, 80, token);
+      if (seq !== nbrSeq || current !== it) return;
+      const cand = r.items.filter(n => n.id !== it.id && n.dist >= 4 && n.dist <= 70)
+        .map(n => ({item:n, dist:n.dist, bearing:bearingTo(it.lat, it.lon, n.lat, n.lon)}))
+        .sort((a, b) => a.dist - b.dist);
+      const used = new Set(), list = [];
+      for (const n of cand) { const sec = Math.round(n.bearing / 45) % 8; if (used.has(sec)) continue; used.add(sec); list.push(n); if (list.length >= 6) break; }
+      makeArrows(list);
+    } catch (e) { console.error(e); }
+  }
+  function makeArrows(list){
+    arrowsEl.textContent = '';
+    nbrs = list.map(n => {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'arrow';
+      b.setAttribute('aria-label', `${DIRS[Math.round(n.bearing / 45) % 8]}へ進む（${fmtDist(n.dist)}）`);
+      b.innerHTML = '<svg viewBox="0 0 56 56" aria-hidden="true"><path d="M28 6 L48 34 H37 V48 H19 V34 H8 Z" fill="#0078BF" transform="translate(3 3)"/><path d="M28 6 L48 34 H37 V48 H19 V34 H8 Z" fill="#FF48B0" stroke="#00218A" stroke-width="2.5" stroke-linejoin="round"/></svg>';
+      b.addEventListener('click', ev => { ev.stopPropagation(); if (!loading) loadPano(n.item, {bearing:n.bearing}); });
+      arrowsEl.append(b); n.el = b; return n;
+    });
+    updateArrows();
+  }
+  function project(lon, lat){
+    const cl = Math.cos(lat);
+    const x = Math.sin(lon) * cl, y = Math.sin(lat), z = -Math.cos(lon) * cl;
+    const cy = Math.cos(-V.yaw), sy = Math.sin(-V.yaw);
+    const x1 = x * cy + z * sy, z1 = -x * sy + z * cy;
+    const cp = Math.cos(-V.pitch), sp = Math.sin(-V.pitch);
+    const y2 = y * cp - z1 * sp, z2 = y * sp + z1 * cp;
+    if (z2 > -.05) return null;
+    const th = Math.tan(V.fov / 2), asp = cv.width / cv.height;
+    return {x: (x1 / -z2 / (th * asp)) * .5 + .5, y: .5 - (y2 / -z2 / th) * .5};
+  }
+  function updateArrows(){
+    if (!nbrs.length || !current) return;
+    const r = cv.getBoundingClientRect(), comp = current.compass || 0;
+    nbrs.forEach(n => {
+      const lon = rad(n.bearing - comp);
+      const lat = -clamp(Math.atan(2.4 / n.dist), .1, .5);
+      const p1 = project(lon, lat);
+      if (!p1 || p1.x < -.1 || p1.x > 1.1 || p1.y < .1 || p1.y > 1.1) { n.el.style.display = 'none'; return; }
+      const far = Math.max(n.dist * 1.6, n.dist + 3);
+      const p2 = project(lon, -clamp(Math.atan(2.4 / far), .05, .5));
+      let ang = 0;
+      if (p2) ang = Math.atan2((p2.x - p1.x) * r.width, (p1.y - p2.y) * r.height);
+      const sc = clamp(1.2 - n.dist / 70, .6, 1.1);
+      n.el.style.display = '';
+      n.el.style.left = (p1.x * 100) + '%'; n.el.style.top = (p1.y * 100) + '%';
+      n.el.style.transform = `translate(-50%,-50%) rotate(${ang}rad) scale(${sc})`;
+    });
   }
 
   /* ================= 検索フォーム ================= */
@@ -710,9 +924,11 @@ void main(){
       x.font = `500 ${Math.round(fs * .82)}px "Zen Kaku Gothic New","Hiragino Sans",sans-serif`;
       x.fillText(ellipsize(x, `${current.author} / ${current.license}`, maxW), m, m + h + mb * .55);
       x.fillText(current.author === 'Mapillary contributors' ? 'Mapillary' : 'Wikimedia Commons', m, m + h + mb * .78);
-      const sr = mb * .16, sy = m + h + mb * .55, sx = c.width - m - sr * 2.2;
-      x.fillStyle = '#FF48B0'; x.beginPath(); x.arc(sx, sy, sr, 0, 7); x.fill();
-      x.fillStyle = '#0078BF'; x.beginPath(); x.arc(sx + sr * 1.2, sy, sr, 0, 7); x.fill();
+      const sr = mb * .16, sy = m + h + mb * .55, sx = c.width - m - sr * 4.4;
+      INK.cur.c.forEach((col, i) => {
+        x.fillStyle = `rgb(${col.map(v => Math.round(v * 255)).join(',')})`;
+        x.beginPath(); x.arc(sx + i * sr * 1.3, sy, sr, 0, 7); x.fill();
+      });
       x.globalCompositeOperation = 'source-over';
     }
     return c;
@@ -722,7 +938,7 @@ void main(){
     if (!hasTex) return null;
     const ow = cv.width, oh = cv.height, W = 1440;
     cv.width = W; cv.height = Math.round(W * oh / ow);
-    draw();
+    draw(true);
     const out = compose();
     cv.width = ow; cv.height = oh; dirty = true;
     const d = new Date();
